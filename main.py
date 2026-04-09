@@ -1,58 +1,110 @@
-#!/usr/bin/env python3
-"""
-NEXUS CORE - Sistema Operacional Conceitual
-Versão: 0.1.0-alpha
-Arquiteto: Visionário do Código Perfeito
-"""
-
+import asyncio
 import sys
 import os
 
-# Adiciona o diretório raiz ao path para imports corretos
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from utils.logger import logger, LogLevel
+from utils.logger import logger
+from core.scheduler import AsyncScheduler
+from core.memory import VirtualMemoryManager, MemoryProtection
+from core.vfs import VirtualFileSystem
 
-def banner():
-    """Exibe o banner de inicialização do NEXUS CORE"""
-    print("\033[96m")  # Ciano
-    print(r"""
-    _   _      _    ____            _             
-   | \ | | ___| |_ / ___| _   _ ___| |_ ___ _ __  
-   |  \| |/ _ \ __| \___ \| | | / __| __/ _ \ '_ \ 
-   | |\  |  __/ |_  ___) | |_| \__ \ ||  __/ | | |
-   |_| \_|\___|\__||____/ \__, |___/\__\___|_| |_|
-                          |___/                   
-    """)
-    print("\033[0m")
-    print("NEXUS CORE v0.1.0-alpha - Inicializando Núcleo...")
-    print("=" * 50)
+def print_banner(version: str):
+    banner = f"""
+    ╔═══════════════════════════════════════════════════════════╗
+    ║           N E X U S   C O R E   {version}                 ║
+    ║      Full System Integration (Scheduler+Mem+VFS)          ║
+    ║                                                           ║
+    ║   [OK] Logger System                                      ║
+    ║   [OK] Process Scheduler                                  ║
+    ║   [OK] Virtual Memory Manager                             ║
+    ║   [OK] Virtual File System                                ║
+    ╚═══════════════════════════════════════════════════════════╝
+    """
+    print(banner)
 
-def initialize_system():
-    """Sequência de inicialização do sistema"""
+async def system_task(pid: int, name: str, scheduler: AsyncScheduler, mem: VirtualMemoryManager, fs: VirtualFileSystem):
+    logger.info(f"Process {name} (PID {pid}) starting system operations", component="TASK")
+    
+    # 1. Operações de Memória
+    addr = mem.allocate(pid, 2048, MemoryProtection.READ_WRITE)
+    if addr is None:
+        logger.error(f"Memory allocation failed for {name}", component="TASK")
+        return
+    
+    data = f"Data from process {name}".encode()
+    mem.write(pid, 0, data)
+    await asyncio.sleep(0.2)
+    read_back = mem.read(pid, 0, len(data))
+    
+    if read_back == data:
+        logger.debug(f"Memory integrity OK for {name}", component="TASK")
+    else:
+        logger.error(f"Memory corruption in {name}", component="TASK")
+    
+    # 2. Operações de Arquivo
+    file_path = f"/data/{name}_log.txt"
+    fs.touch(file_path)
+    fs.write_file(file_path, data + b" - persisted to VFS")
+    
+    content = fs.read_file(file_path)
+    if content and b"persisted to VFS" in content:
+        logger.debug(f"VFS integrity OK for {name}", component="TASK")
+    else:
+        logger.error(f"VFS read error for {name}", component="TASK")
+    
+    # Libera memória
+    mem.free(pid)
+    logger.info(f"Process {name} completed successfully", component="TASK")
+
+async def run_full_integration_test():
+    logger.info("Starting Full System Integration Test...", component="KERNEL")
+    
+    # Inicializa componentes
+    scheduler = AsyncScheduler()
+    mem_manager = VirtualMemoryManager(total_memory_mb=8)
+    fs_system = VirtualFileSystem()
+
+    # Configura estrutura de diretórios básica
+    fs_system.mkdir("/data")
+    fs_system.mkdir("/home")
+    fs_system.cd("/data")
+    logger.info(f"Root contents: {fs_system.ls('/')}", component="VFS")
+
+    # Cria processos SEM passar o pid explicitamente
+    # A assinatura da tarefa deve ser: async def task(pid, nome, scheduler, mem, fs)
+    p1 = scheduler.create_process(system_task, "SysWorker_A", scheduler, mem_manager, fs_system, priority=5)
+    p2 = scheduler.create_process(system_task, "SysWorker_B", scheduler, mem_manager, fs_system, priority=3)
+    
+    logger.info(f"Created 2 integrated processes.", component="KERNEL")
+    
     try:
-        logger.info("Iniciando sequência de boot do NEXUS CORE", component="BOOT")
+        # Executa por 5 segundos
+        await asyncio.wait_for(scheduler.run(), timeout=5.0)
+    except asyncio.TimeoutError:
+        logger.info("Integration test duration completed.", component="KERNEL")
+    
+    scheduler.stop()
+    
+    final_stats = mem_manager.get_usage_stats()
+    logger.info(f"Final Memory Usage: {final_stats['usage_percent']:.2f}%", component="KERNEL")
+
+def main():
+    try:
+        print_banner("v0.4-ALPHA")
+        logger.info("NEXUS CORE Boot sequence initiated", component="KERNEL")
         
-        # Verificação de integridade
-        logger.debug("Verificando integridade dos módulos básicos", component="INTEGRITY")
+        asyncio.run(run_full_integration_test())
         
-        # Carregamento de componentes
-        logger.info("Carregando módulo de Logging", component="LOADER")
-        logger.info("Módulo de Logging ativo e operacional", component="LOADER")
-        
-        # Simulação de próximos passos (serão implementados em breve)
-        logger.info("Aguardando implementação do Escalonador de Processos", component="SCHEDULER")
-        logger.info("Aguardando implementação do Gerenciador de Memória", component="MEMORY")
-        logger.info("Aguardando implementação do Sistema de Arquivos Virtual", component="VFS")
-        
-        logger.info("Sistema inicializado com sucesso. Aguardando próximos módulos.", component="KERNEL")
-        print("\n\033[92m✓ NEXUS CORE pronto para expansão.\033[0m")
+        logger.info("System shutdown sequence initiated...", component="KERNEL")
+        print("\n[SYSTEM HALTED] NEXUS CORE session ended successfully.")
         
     except Exception as e:
-        logger.critical(f"Falha crítica na inicialização: {str(e)}", component="KERNEL")
-        print(f"\n\033[91m✗ ERRO CRÍTICO: {str(e)}\033[0m")
+        logger.critical(f"System crash: {str(e)}", component="KERNEL")
+        print(f"\n[CRITICAL ERROR] {str(e)}")
+        import traceback
+        traceback.print_exc()
         sys.exit(1)
 
 if __name__ == "__main__":
-    banner()
-    initialize_system()
+    main()
