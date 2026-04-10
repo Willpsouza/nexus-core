@@ -8,3 +8,5 @@ env/
 *.log
 *.log.old
 .DS_Store
+nexus_disk.img
+*.log
