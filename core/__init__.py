@@ -1,15 +1,13 @@
 from .scheduler import AsyncScheduler, ProcessState
-from .memory import VirtualMemoryManager, MemoryProtection, memory_manager
-from .vfs import VirtualFileSystem, vfs, VFSFile, VFSDirectory
+from .memory import VirtualMemoryManager, MemoryProtection
+from .vfs import VirtualFileSystem, VFSFile, VFSDirectory
 
 __all__ = [
-    'AsyncScheduler', 
-    'ProcessState', 
-    'VirtualMemoryManager', 
-    'MemoryProtection', 
-    'memory_manager',
+    'AsyncScheduler',
+    'ProcessState',
+    'VirtualMemoryManager',
+    'MemoryProtection',
     'VirtualFileSystem',
-    'vfs',
     'VFSFile',
     'VFSDirectory'
 ]

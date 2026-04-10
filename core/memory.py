@@ -147,6 +147,3 @@ class VirtualMemoryManager:
             "blocks": used_blocks,
             "total_blocks": total_blocks
         }
-
-# Instância global (opcional, se necessário)
-memory_manager = VirtualMemoryManager()

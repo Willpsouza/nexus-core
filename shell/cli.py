@@ -95,8 +95,8 @@ class NexusShell:
             return
         path = args[0]
         fs = self.kernel.get_module('VFS')
-        if fs and fs.change_directory(path):
-            pass # Sucesso silencioso ou atualizar prompt
+        if fs and fs.cd(path):
+            pass  # Success — silently change directory
         else:
             print(f"[ERROR] Failed to change directory to '{path}'")
 
@@ -161,8 +161,10 @@ class NexusShell:
         mem = self.kernel.get_module('VirtualMemoryManager')
         if mem:
             stats = mem.get_usage_stats()
-            print(f"Total Memory: {stats['total_mb']} MB")
-            print(f"Used: {stats['used_mb']:.2f} MB ({stats['usage_percent']:.2f}%)")
+            total_mb = stats['total_memory'] / (1024 * 1024)
+            used_mb = stats['used_memory'] / (1024 * 1024)
+            print(f"Total Memory: {total_mb:.0f} MB")
+            print(f"Used: {used_mb:.2f} MB ({stats['usage_percent']:.2f}%)")
             print(f"Active Blocks: {stats['blocks']}")
         else:
             print("[ERROR] Memory module not available.")

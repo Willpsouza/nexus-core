@@ -70,42 +70,40 @@ class AsyncScheduler:
         """Executa o escalonador Round-Robin simulado"""
         self._running = True
         logger.info("Scheduler started", component="SCHEDULER")
-        
-        # Dicionário para rastrear tarefas asyncio ativas
+
         active_tasks: Dict[int, asyncio.Task] = {}
 
         while self._running:
-            # Filtra processos que ainda não terminaram e não têm tarefa rodando
             ready_processes = [
-                p for p in self.processes.values() 
+                p for p in self.processes.values()
                 if p.state != ProcessState.TERMINATED and p.pid not in active_tasks
             ]
-            
+
             if not ready_processes and not active_tasks:
                 logger.info("No active processes. Scheduler idle.", component="SCHEDULER")
                 await asyncio.sleep(0.5)
                 continue
 
-            # Ordena por prioridade (maior primeiro)
             ready_processes.sort(key=lambda p: p.priority, reverse=True)
-            
-            # Inicia novos processos prontos
+
             for proc in ready_processes:
                 proc.state = ProcessState.RUNNING
                 logger.debug(f"Context switch to: {proc.name} (Priority: {proc.priority})", component="SCHEDULER")
-                
-                # Cria a tarefa asyncio real
                 task = asyncio.create_task(self._run_process_logic(proc))
                 active_tasks[proc.pid] = task
 
-            # Verifica tarefas concluídas
-            finished_pids = [pid for pid, task in active_tasks.items() if task.done()]
-            for pid in finished_pids:
-                del active_tasks[pid]
-                # O estado já foi marcado como TERMINADO dentro de _run_process_logic
-            
-            # Pequeno delay para não busy-wait
-            await asyncio.sleep(0.1)
+            # Poll for completion so we can check _running flag
+            while active_tasks:
+                if not self._running:
+                    for pid, task in active_tasks.items():
+                        task.cancel()
+                    active_tasks.clear()
+                    break
+
+                await asyncio.sleep(0.1)
+                finished_pids = [pid for pid, task in active_tasks.items() if task.done()]
+                for pid in finished_pids:
+                    del active_tasks[pid]
 
     def stop(self):
         self._running = False

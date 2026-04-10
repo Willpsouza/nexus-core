@@ -1,19 +1,21 @@
 import datetime
-from typing import Dict, List, Optional, Union
-from enum import Enum
+import pickle
+import os
+from typing import Dict, List, Optional, Any
 from utils.logger import logger
 
-class VFSNodeType(Enum):
+DISK_FILE = "nexus_disk.img"
+
+class VFSNodeType:
     FILE = "FILE"
     DIRECTORY = "DIRECTORY"
 
 class VFSNode:
-    def __init__(self, name: str, node_type: VFSNodeType, parent: Optional['VFSDirectory'] = None):
+    def __init__(self, name: str, node_type: str, parent: Optional['VFSDirectory'] = None):
         self.name = name
         self.node_type = node_type
         self.parent = parent
         self.created_at = datetime.datetime.now()
-        self.modified_at = datetime.datetime.now()
 
     def get_path(self) -> str:
         if self.parent is None:
@@ -29,19 +31,11 @@ class VFSFile(VFSNode):
         self.content: bytes = b""
 
     def write(self, data: bytes) -> bool:
-        try:
-            self.content = data
-            self.modified_at = datetime.datetime.now()
-            return True
-        except Exception as e:
-            logger.error(f"Write failed for {self.get_path()}: {e}", component="VFS")
-            return False
+        self.content = data
+        return True
 
-    def read(self, offset: int = 0, size: Optional[int] = None) -> bytes:
-        if offset < 0 or offset > len(self.content):
-            return b""
-        end = len(self.content) if size is None else offset + size
-        return self.content[offset:end]
+    def read(self) -> bytes:
+        return self.content
 
 class VFSDirectory(VFSNode):
     def __init__(self, name: str, parent: Optional['VFSDirectory'] = None):
@@ -49,18 +43,14 @@ class VFSDirectory(VFSNode):
         self.children: Dict[str, VFSNode] = {}
 
     def add_node(self, node: VFSNode) -> bool:
-        if node.name in self.children:
-            return False
+        if node.name in self.children: return False
         node.parent = self
         self.children[node.name] = node
-        self.modified_at = datetime.datetime.now()
         return True
 
     def remove_node(self, name: str) -> bool:
-        if name not in self.children:
-            return False
+        if name not in self.children: return False
         del self.children[name]
-        self.modified_at = datetime.datetime.now()
         return True
 
     def get_node(self, name: str) -> Optional[VFSNode]:
@@ -73,131 +63,209 @@ class VirtualFileSystem:
     def __init__(self):
         self.root = VFSDirectory("")
         self.current_dir: VFSDirectory = self.root
-        logger.info("VirtualFileSystem initialized with root '/'", component="VFS")
+        self._disk_loaded = False
+        
+        # Tenta carregar do disco imediatamente
+        if os.path.exists(DISK_FILE):
+            self.load_state()
+        else:
+            logger.info("No existing disk image found. Starting fresh.", component="DISK")
+            
+        logger.info("VFS initialized", component="VFS")
 
     def _resolve_path(self, path: str) -> Optional[VFSNode]:
-        if path == "/":
-            return self.root
-        
-        parts = path.split('/')
+        if path == "/": return self.root
+
+        # Caminho absoluto
         if path.startswith('/'):
             current = self.root
-            parts = parts[1:]
+            parts = [p for p in path.split('/') if p]
         else:
+            # Caminho relativo
             current = self.current_dir
+            parts = [p for p in path.split('/') if p]
 
         for part in parts:
-            if part == "" or part == ".":
-                continue
             if part == "..":
-                if current.parent:
-                    current = current.parent
+                if current.parent: current = current.parent
+            elif part == ".":
                 continue
-            
-            if not isinstance(current, VFSDirectory):
-                return None
-            
-            node = current.get_node(part)
-            if node is None:
-                return None
-            current = node
-        
+            else:
+                if isinstance(current, VFSDirectory):
+                    node = current.get_node(part)
+                    if node: current = node
+                    else: return None
+                else: return None
         return current
 
     def mkdir(self, path: str) -> bool:
-        full_path = self._resolve_path(path)
-        if full_path:
-            logger.warning(f"Directory already exists: {path}", component="VFS")
+        path = path.strip('/')
+        if not path:
             return False
-        
-        # Criar caminho intermediário se necessário (simplificado para criar apenas o último nó no diretório atual se relativo)
-        # Para simplificar, vamos assumir que o pai existe ou é absoluto
-        dir_name = path.split('/')[-1]
-        parent_path = '/'.join(path.split('/')[:-1])
-        
-        if not parent_path or path.startswith('/') and path.count('/') == 1:
-            parent = self.root
-        else:
-            parent_node = self._resolve_path(parent_path if path.startswith('/') else f"{self.current_dir.get_path()}/{parent_path}")
-            if not parent_node or not isinstance(parent_node, VFSDirectory):
-                logger.error(f"Parent directory not found for {path}", component="VFS")
-                return False
-            parent = parent_node
+        parts = [p for p in path.split('/') if p and p != '.']
+        if not parts:
+            return False
 
-        new_dir = VFSDirectory(dir_name)
-        if parent.add_node(new_dir):
-            logger.debug(f"Directory created: {new_dir.get_path()}", component="VFS")
-            return True
-        return False
+        # Traverse or create intermediate directories
+        current = self.current_dir
+        for part in parts[:-1]:
+            if part == '..':
+                if current.parent:
+                    current = current.parent
+                else:
+                    return False
+            else:
+                node = current.get_node(part)
+                if node:
+                    if not isinstance(node, VFSDirectory):
+                        return False  # A file exists with this name
+                    current = node
+                else:
+                    # Auto-create intermediate directories
+                    new_dir = VFSDirectory(part)
+                    current.add_node(new_dir)
+                    current = new_dir
+
+        # Create the final directory
+        name = parts[-1]
+        if current.get_node(name):
+            return False  # Already exists
+        current.add_node(VFSDirectory(name))
+        return True
 
     def touch(self, path: str) -> bool:
-        node = self._resolve_path(path)
-        if node:
-            return False # Já existe
-        
-        file_name = path.split('/')[-1]
-        parent_path = '/'.join(path.split('/')[:-1])
-        
-        if not parent_path or (path.startswith('/') and path.count('/') == 1):
-            parent = self.root
-        else:
-            # Lógica simplificada de resolução do pai
-            abs_parent = parent_path if path.startswith('/') else f"{self.current_dir.get_path()}/{parent_path}"
-            # Limpar duplas barras se houver
-            abs_parent = abs_parent.replace('//', '/')
-            parent_node = self._resolve_path(abs_parent)
-            if not parent_node or not isinstance(parent_node, VFSDirectory):
-                logger.error(f"Parent directory not found for {path}", component="VFS")
-                return False
-            parent = parent_node
-
-        new_file = VFSFile(file_name)
-        if parent.add_node(new_file):
-            logger.debug(f"File created: {new_file.get_path()}", component="VFS")
-            return True
-        return False
-
-    def write_file(self, path: str, data: bytes) -> bool:
-        node = self._resolve_path(path)
-        if not node:
-            logger.error(f"File not found: {path}", component="VFS")
+        path = path.strip('/')
+        if not path:
             return False
-        if not isinstance(node, VFSFile):
-            logger.error(f"Not a file: {path}", component="VFS")
+        parts = [p for p in path.split('/') if p and p != '.']
+        if not parts:
             return False
-        
-        success = node.write(data)
-        if success:
-            logger.debug(f"Wrote {len(data)} bytes to {path}", component="VFS")
-        return success
 
-    def read_file(self, path: str) -> Optional[bytes]:
-        node = self._resolve_path(path)
-        if not node or not isinstance(node, VFSFile):
-            return None
-        return node.read()
+        # Traverse to parent directory
+        current = self.current_dir
+        for part in parts[:-1]:
+            if part == '..':
+                if current.parent:
+                    current = current.parent
+                else:
+                    return False
+            else:
+                node = current.get_node(part)
+                if node:
+                    if not isinstance(node, VFSDirectory):
+                        return False  # A file exists with this name
+                    current = node
+                else:
+                    return False  # Parent directory doesn't exist
 
-    def ls(self, path: str = ".") -> Optional[List[str]]:
-        if path == ".":
-            target = self.current_dir
-        else:
-            node = self._resolve_path(path)
-            if not node:
-                return None
-            target = node
-        
-        if not isinstance(target, VFSDirectory):
-            return None
-        return target.list_contents()
+        # Create the file
+        name = parts[-1]
+        if current.get_node(name):
+            return False  # Already exists
+        current.add_node(VFSFile(name))
+        return True
+
+    def ls(self, path: str = ".") -> List[str]:
+        target = self.current_dir if path == "." else self._resolve_path(path)
+        if target and isinstance(target, VFSDirectory):
+            return target.list_contents()
+        return []
 
     def cd(self, path: str) -> bool:
-        node = self._resolve_path(path)
-        if node and isinstance(node, VFSDirectory):
-            self.current_dir = node
-            logger.debug(f"Changed directory to: {node.get_path()}", component="VFS")
+        target = self._resolve_path(path)
+        if target and isinstance(target, VFSDirectory):
+            self.current_dir = target
             return True
-        logger.error(f"Cannot change to directory: {path}", component="VFS")
         return False
 
-# Instância global (opcional, mas útil para testes rápidos)
-vfs = VirtualFileSystem()
+    def cat(self, path: str) -> Optional[bytes]:
+        node = self._resolve_path(path)
+        if node and isinstance(node, VFSFile):
+            return node.read()
+        return None
+
+    def rm(self, path: str) -> bool:
+        node = self._resolve_path(path)
+        if node and node.parent:
+            return node.parent.remove_node(node.name)
+        return False
+
+    # --- Persistência (Disk Driver) ---
+    
+    def _serialize_node(self, node: VFSNode) -> dict:
+        """Converte a árvore de nós em um dicionário salvável"""
+        data = {
+            'name': node.name,
+            'type': node.node_type,
+            'created': node.created_at,
+            'children': {}
+        }
+        if isinstance(node, VFSFile):
+            data['content'] = node.content
+        
+        if isinstance(node, VFSDirectory):
+            for name, child in node.children.items():
+                data['children'][name] = self._serialize_node(child)
+                
+        return data
+
+    def _deserialize_node(self, data: dict, parent: Optional[VFSDirectory] = None) -> VFSNode:
+        """Reconstrói a árvore de nós a partir do dicionário"""
+        if data['type'] == VFSNodeType.FILE:
+            node = VFSFile(data['name'], parent)
+            node.content = data.get('content', b"")
+            node.created_at = data.get('created', datetime.datetime.now())
+        else:
+            node = VFSDirectory(data['name'], parent)
+            node.created_at = data.get('created', datetime.datetime.now())
+            for child_data in data.get('children', {}).values():
+                child_node = self._deserialize_node(child_data, node)
+                node.children[child_node.name] = child_node
+        return node
+
+    def save_state(self):
+        """Salva a estrutura atual no disco"""
+        try:
+            # Precisamos resetar o current_dir para a raiz antes de salvar para garantir consistência
+            # ou salvar o caminho atual também. Para simplificar, salvamos a árvore toda da raiz.
+            root_data = self._serialize_node(self.root)
+            
+            with open(DISK_FILE, 'wb') as f:
+                pickle.dump(root_data, f)
+            
+            logger.info(f"Disk saved: {DISK_FILE}", component="DISK")
+        except Exception as e:
+            logger.error(f"Failed to save disk state: {e}", component="DISK")
+
+    def load_state(self):
+        """Carrega a estrutura do disco"""
+        try:
+            with open(DISK_FILE, 'rb') as f:
+                root_data = pickle.load(f)
+            
+            self.root = self._deserialize_node(root_data)
+            self.current_dir = self.root # Reset para raiz ao carregar
+            self._disk_loaded = True
+            logger.info("Disk state loaded successfully.", component="DISK")
+        except Exception as e:
+            logger.error(f"Failed to load disk state: {e}", component="DISK")
+            self.root = VFSDirectory("")
+            self.current_dir = self.root
+
+    # --- Métodos Auxiliares para o Shell ---
+    def create_directory(self, name: str) -> bool: return self.mkdir(name)
+    def create_file(self, name: str) -> bool: return self.touch(name)
+    def list_directory(self, path: str = ".") -> list: return self.ls(path)
+    def get_current_path(self) -> str: 
+        path = []
+        curr = self.current_dir
+        while curr.parent is not None:
+            path.append(curr.name)
+            curr = curr.parent
+        return "/" + "/".join(reversed(path)) if path else "/"
+    
+    def read_file(self, path: str) -> Optional[str]:
+        data = self.cat(path)
+        return data.decode('utf-8') if data else None
+    
+    def remove(self, name: str) -> bool: return self.rm(name)
